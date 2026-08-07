@@ -163,11 +163,9 @@ def rebuild_module_set(prev_set, model_base, directions, anchor_layer, energy_th
             for entry in prev_set
         }
 
-        embed_module = (
-            model.model.embed_tokens
-            if hasattr(model, "model")
-            else model.embed_tokens
-        )
+        # get_input_embeddings() resolves the text embedding across all wrappers,
+        # incl. Mistral3 (model.model.language_model.embed_tokens, 3 levels deep).
+        embed_module = model_base.model.get_input_embeddings()
         upstream_blocks = [("embed", embed_module, make_embed_hook(direction))]
         for i in range(anchor_layer):
             upstream_blocks.append((f"attn_{i}", model_base.model_attn_modules[i], make_linear_hook(direction)))
@@ -187,11 +185,7 @@ def rebuild_module_set(prev_set, model_base, directions, anchor_layer, energy_th
         name = entry[0] if isinstance(entry, tuple) else entry
 
         if name == "embed":
-            embed_module = (
-                model.model.embed_tokens
-                if hasattr(model, "model")
-                else model.embed_tokens
-            )
+            embed_module = model_base.model.get_input_embeddings()
             hook_fn = make_embed_hook(direction)
             module_set.append((name, embed_module, hook_fn))
 
@@ -268,14 +262,7 @@ def heuristic_elimination_search(cfg, model_base, directions, harmful_val, harml
             # Rebuild module reference
                 
             if name.startswith("embed"):
-                if hasattr(model, "language_model"):
-                    model = model.language_model
-
-                if hasattr(model, "model"):
-                    embed_module = model.model.embed_tokens
-                else:
-                    embed_module = model.embed_tokens
-
+                embed_module = model_base.model.get_input_embeddings()
                 hook_fn = make_embedding_hook(directions[anchor_layer])
             elif name.startswith("mlp_"):
                 idx = int(name.split("_")[1])
@@ -302,15 +289,7 @@ def heuristic_elimination_search(cfg, model_base, directions, harmful_val, harml
         all_components.append((f"attn_{i}", model_base.model_attn_modules[i], hook_fn))
         all_components.append((f"mlp_{i}", model_base.model_mlp_modules[i], hook_fn))
     
-    model = model_base.model
-
-    if hasattr(model, "language_model"):
-        model = model.language_model
-
-    if hasattr(model, "model"):
-        embed_module = model.model.embed_tokens
-    else:
-        embed_module = model.embed_tokens
+    embed_module = model_base.model.get_input_embeddings()
     embed_hook_fn = make_embedding_hook(direction)
     all_components.append(("embed", embed_module, embed_hook_fn))
     
@@ -476,11 +455,7 @@ def iterative_pruning(cfg, model_base, minimal_set, directions, harmful_val, anc
             name = entry
             # Rebuild module reference
             if name == "embed":
-                module = (
-                    model_base.model.model.embed_tokens
-                    if hasattr(model_base.model, "model")
-                    else model_base.model.embed_tokens
-                )
+                module = model_base.model.get_input_embeddings()
                 hook_fn = make_embedding_hook(directions[anchor_layer])
             elif name.startswith("mlp_"):
                 idx = int(name.split("_")[1])

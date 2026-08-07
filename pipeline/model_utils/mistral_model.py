@@ -64,17 +64,32 @@ def tokenize_instructions_mistral_chat(
         return_tensors="pt",
     )
 
+def mistral_text_decoder(model):
+    """Locate the text decoder backbone of a Mistral3ForConditionalGeneration,
+    robust to the wrapper layout changing across transformers versions.
+
+    transformers >=5.x:  model.model (Mistral3Model) -> .language_model -> .layers
+    older layouts:        model.language_model -> .layers
+    """
+    if hasattr(model, "model") and hasattr(model.model, "language_model"):
+        return model.model.language_model
+    if hasattr(model, "language_model"):
+        return model.language_model
+    return getattr(model, "model", model)
+
+
 def orthogonalize_mistral_weights(model, direction: Float[Tensor, "d_model"]):
-    model.language_model.get_input_embeddings().weight.data = get_orthogonalized_matrix(
-        model.language_model.get_input_embeddings().weight.data, direction
+    decoder = mistral_text_decoder(model)
+    model.get_input_embeddings().weight.data = get_orthogonalized_matrix(
+        model.get_input_embeddings().weight.data, direction
     )
 
-    for block in model.language_model.layers:
+    for block in decoder.layers:
         block.self_attn.o_proj.weight.data = get_orthogonalized_matrix(block.self_attn.o_proj.weight.data.T, direction).T
         block.mlp.down_proj.weight.data = get_orthogonalized_matrix(block.mlp.down_proj.weight.data.T, direction).T
 
 def act_add_mistral_weights(model, direction: Float[Tensor, "d_model"], coeff, layer):
-    layer_module = model.language_model.layers[layer]
+    layer_module = mistral_text_decoder(model).layers[layer]
     dtype = layer_module.mlp.down_proj.weight.dtype
     device = layer_module.mlp.down_proj.weight.device
     bias = (coeff * direction).to(dtype=dtype, device=device)
@@ -82,7 +97,16 @@ def act_add_mistral_weights(model, direction: Float[Tensor, "d_model"], coeff, l
 
 class MistralModel(ModelBase):
 
-    def _load_model(self, model_path, dtype=torch.float16):
+    # Mistral-Small-3.2 ships no tokenizer/processor of its own, so we borrow 3.1's
+    # (see _load_tokenizer). save_ortho_weights reads this to write the image
+    # processor (preprocessor_config.json) into baked checkpoints for vLLM.
+    processor_source = "mistralai/Mistral-Small-3.1-24B-Instruct-2503"
+
+    def _load_model(self, model_path, dtype=torch.bfloat16):
+        # bfloat16, NOT float16: Mistral-Small-24B is bf16-native and its activations
+        # overflow fp16's ~65504 range -> NaNs -> gibberish (seen when the baked
+        # checkpoint was served in fp16). bf16 matches the model's native dtype, so
+        # this keeps both the baked weights and HF generation (sweep) sane.
         model = Mistral3ForConditionalGeneration.from_pretrained(
             model_path,
             torch_dtype=dtype,
@@ -117,7 +141,7 @@ class MistralModel(ModelBase):
         return MISTRAL_REFUSAL_TOKS
 
     def _get_model_block_modules(self):
-        return self.model.language_model.layers
+        return mistral_text_decoder(self.model).layers
 
     def _get_attn_modules(self):
         return torch.nn.ModuleList([block.self_attn for block in self._get_model_block_modules()])
@@ -140,8 +164,9 @@ class MistralModel(ModelBase):
         Accesses via model.language_model due to multimodal wrapper.
         Returns eigenvalues (descending), eigenvectors, F_local.
         """
-        mlp_module = self.model.language_model.layers[layer_idx].mlp
-        attn_module = self.model.language_model.layers[layer_idx].self_attn
+        decoder = mistral_text_decoder(self.model)
+        mlp_module = decoder.layers[layer_idx].mlp
+        attn_module = decoder.layers[layer_idx].self_attn
 
         W_down = mlp_module.down_proj.weight.data.float()  # (hidden_size, intermediate_size)
         W_O = attn_module.o_proj.weight.data.float()       # (hidden_size, num_heads * head_dim)

@@ -28,22 +28,28 @@ for (_, row), color in zip(df.iterrows(), colors):
         "",
         xy=(mechanism_x, mechanism_y),
         xytext=(complement_x, complement_y),
-        arrowprops=dict(arrowstyle="->", color=color, lw=1.8),
+        arrowprops=dict(
+            arrowstyle="->",
+            color=color,
+            lw=3,
+            mutation_scale=20  # increase this (default ~10)
+        ),
     )
-
     # Mechanism marker: filled circle
-    ax.scatter(mechanism_x, mechanism_y, marker="o", s=120,
+    ax.scatter(mechanism_x, mechanism_y, marker="o", s=180,
                color=color, zorder=5)
 
     # Complement marker: hollow diamond
-    ax.scatter(complement_x, complement_y, marker="D", s=100,
+    ax.scatter(complement_x, complement_y, marker="D", s=180,
                facecolors="none", edgecolors=color, linewidths=2.0, zorder=5)
 
     # Label at mechanism point
     if "Qwen" in row["model_short"]:
-        pos = (-80, 2)
+        pos = (-90, 2)
     elif "Phi" in row["model_short"]:
         pos = (12, -3)
+    elif "Mistral" in row["model_short"]:
+        pos = (8, 0)
     else: 
         pos = (3, 4)
     ax.annotate(

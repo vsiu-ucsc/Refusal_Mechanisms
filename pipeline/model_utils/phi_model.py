@@ -9,6 +9,26 @@ from pipeline.utils.utils import get_orthogonalized_matrix
 from pipeline.model_utils.model_base import ModelBase
 
 
+def _ensure_losskwargs_shim():
+    """Phi-4-mini-instruct's bundled modeling_phi3.py (loaded via trust_remote_code)
+    does `from transformers.utils import LossKwargs`, but transformers >=5 renamed
+    it to TransformersKwargs. Re-expose the original minimal TypedDict so the remote
+    code imports cleanly. It was only ever a kwargs TypedDict (num_items_in_batch),
+    inert at runtime — and defining it explicitly (vs aliasing TransformersKwargs)
+    guarantees it still combines as a TypedDict base in KwargsForCausalLM."""
+    import transformers.utils as tu
+    if not hasattr(tu, "LossKwargs"):
+        from typing import Optional, TypedDict
+
+        class LossKwargs(TypedDict, total=False):
+            num_items_in_batch: Optional[int]
+
+        tu.LossKwargs = LossKwargs
+
+
+_ensure_losskwargs_shim()
+
+
 PHI_REFUSAL_TOKS = [0]  # placeholder
 EOI_TEXT = "<|assistant|>"
 def format_instruction_phi_chat(
@@ -83,10 +103,18 @@ def orthogonalize_phi_weights(model, direction: Float[Tensor, "d_model"]):
 
 class PhiModel(ModelBase):
     def _load_model(self, model_path, dtype=torch.float16):
+        # trust_remote_code=False → use transformers' native Phi3ForCausalLM, not
+        # microsoft's bundled modeling_phi3.py. That remote file targets an older
+        # transformers and breaks on >=5.x in two ways: `from transformers.utils
+        # import LossKwargs` (removed), and `_tied_weights_keys` declared as a list
+        # where post_init now expects a {target: source} dict. The native impl is
+        # the same Phi3 architecture with the same weights — and since we only bake
+        # weights here (directions come from saved cat_means.pt, eval forward runs
+        # on vLLM), the forward impl is immaterial.
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
             torch_dtype=dtype,
-            trust_remote_code=True,
+            trust_remote_code=False,
             device_map="auto"
         ).eval()
         model.requires_grad_(False)
